@@ -1,0 +1,134 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<project>
+  <actions/>
+  <description></description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.BooleanParameterDefinition>
+          <name>RESETPG</name>
+          <description>If checked, re-creates the PostgreSQL db docker container (clears data)</description>
+          <defaultValue>true</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>TITLE</name>
+          <description>Title to show in the demo application</description>
+          <defaultValue>Docker Demo</defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>JENKINS_IP</name>
+          <description>IP address of the instance that Jenkins is running on</description>
+          <defaultValue>54.152.22.32</defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>SWARM_IP</name>
+          <description>IP address of the instance that the swarm master is running on</description>
+          <defaultValue>54.152.22.32</defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>SWARM_NODES</name>
+          <description>Space separated list of swarm node IPs</description>
+          <defaultValue>54.152.55.59 54.84.118.113</defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>REGISTRY_URL</name>
+          <description>URL of the DHE or open source registry</description>
+          <defaultValue>dhe.demo.dckr.org</defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>POSTGRES_IP</name>
+          <description>IP address on which PostgreSQL container is configured</description>
+          <defaultValue>172.31.20.135</defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>INTERLOCK_DATA</name>
+          <description></description>
+          <defaultValue>{&quot;hostname&quot;:&quot;docker&quot;, &quot;domain&quot;:&quot;demo.dckr.org&quot;}</defaultValue>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <scm class="hudson.plugins.git.GitSCM" plugin="git@2.3.1">
+    <configVersion>2</configVersion>
+    <userRemoteConfigs>
+      <hudson.plugins.git.UserRemoteConfig>
+        <url>https://github.com/mbentley/docker-demo.git</url>
+      </hudson.plugins.git.UserRemoteConfig>
+    </userRemoteConfigs>
+    <branches>
+      <hudson.plugins.git.BranchSpec>
+        <name>*/demo</name>
+      </hudson.plugins.git.BranchSpec>
+    </branches>
+    <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+    <submoduleCfg class="list"/>
+    <extensions/>
+  </scm>
+  <canRoam>true</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers>
+    <com.cloudbees.jenkins.GitHubPushTrigger plugin="github@1.10">
+      <spec></spec>
+    </com.cloudbees.jenkins.GitHubPushTrigger>
+    <hudson.triggers.SCMTrigger>
+      <spec></spec>
+      <ignorePostCommitHooks>false</ignorePostCommitHooks>
+    </hudson.triggers.SCMTrigger>
+  </triggers>
+  <concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command>DOCKER_CMD=&quot;docker --tlsverify --tlscacert=/etc/docker/ca.pem --tlskey=/etc/docker/server-key.pem --tlscert=/etc/docker/server.pem&quot;
+
+# build the demo using the existing Dockerfile and tag the image
+cd demo_pq
+${DOCKER_CMD} -H tcp://${JENKINS_IP}:2376 build --rm -t ${REGISTRY_URL}/demo/docker-demo .
+
+# push the new docker image to Docker Hub Enterprise
+${DOCKER_CMD} -H tcp://${JENKINS_IP}:2376 push ${REGISTRY_URL}/demo/docker-demo</command>
+    </hudson.tasks.Shell>
+    <hudson.tasks.Shell>
+      <command>DOCKER_CMD=&quot;docker --tlsverify --tlscacert=/etc/docker/ca.pem --tlskey=/etc/docker/server-key.pem --tlscert=/etc/docker/server.pem&quot;
+
+# pull the new docker images down on our swarm nodes to ensure latest image will be utilized
+nodes=&quot;${SWARM_NODES}&quot;
+for i in $nodes
+do
+  ${DOCKER_CMD} -H tcp://${i}:2376 pull ${REGISTRY_URL}/demo/docker-demo
+done</command>
+    </hudson.tasks.Shell>
+    <hudson.tasks.Shell>
+      <command>DOCKER_CMD=&quot;docker --tlsverify --tlscacert=/etc/docker/ca.pem --tlskey=/etc/docker/server-key.pem --tlscert=/etc/docker/server.pem&quot;
+
+# re-create the postgres db container if the variable is set to do so
+if [ &quot;$RESETPG&quot; = true ]
+then
+  ${DOCKER_CMD} -H tcp://${JENKINS_IP}:2376 rm -f postgres || true
+  ${DOCKER_CMD} -H tcp://${JENKINS_IP}:2376 run -d --restart=always --name postgres -p 5432:5432 -e POSTGRES_USER=demo -e POSTGRES_PASSWORD=demo postgres:latest
+fi</command>
+    </hudson.tasks.Shell>
+    <hudson.tasks.Shell>
+      <command>DOCKER_CMD=&quot;docker --tlsverify --tlscacert=/etc/docker/ca.pem --tlskey=/etc/docker/server-key.pem --tlscert=/etc/docker/server.pem&quot;
+
+instances=10
+count=0
+
+# create X containers utilizing the random strategy of the swarm cluster
+while [ $count -lt $instances ]
+do
+  # remove the old container
+  ${DOCKER_CMD} -H tcp://${SWARM_IP}:3376 rm -f demo-${count} || true
+  
+  # create a new container
+  ${DOCKER_CMD} -H tcp://${SWARM_IP}:3376 run -P -d --restart=always -e TITLE=&quot;${TITLE}&quot; -e DB_PORT_5432_TCP_ADDR=&quot;${POSTGRES_IP}&quot; -e DB_PORT_5432_TCP_PORT=&quot;5432&quot; -e DB_USER=&quot;demo&quot; -e DB_PASS=&quot;demo&quot; -e DB_NAME=&quot;demo&quot; -e DB_SSL_MODE=&quot;disable&quot; -e INTERLOCK_DATA=&quot;${INTERLOCK_DATA}&quot; --name demo-${count} ${REGISTRY_URL}/demo/docker-demo  
+  # increment the count
+  count=$(expr $count + 1)
+done</command>
+    </hudson.tasks.Shell>
+  </builders>
+  <publishers/>
+  <buildWrappers/>
+</project>
